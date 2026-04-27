@@ -2,7 +2,7 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO libsdl-org/SDL
     REF "release-${VERSION}"
-    SHA512 9e188c992caa7f7ff030789f7926007d2272f51b4c3aa7fc94f58f6823810bde71ce149990c78eee47f26471df2a7b87d4fc25881c339ed2026b1e59052bce39
+    SHA512 aba2caa42db3f7e423e3d0b584bd446e273394b37b3595565a374fbe2fbdee4f9cb74b4585e8577c707ea01dab2ccb09861e61b263be56b5012b20abf045c826
     HEAD_REF main
     PATCHES
         fix-freebsd.patch
@@ -15,6 +15,7 @@ string(COMPARE EQUAL "${VCPKG_CRT_LINKAGE}" "static" FORCE_STATIC_VCRT)
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
     FEATURES
         alsa     SDL_ALSA
+        dbus     SDL_DBUS
         ibus     SDL_IBUS
         vulkan   SDL_VULKAN
         wayland  SDL_WAYLAND
@@ -54,6 +55,7 @@ vcpkg_cmake_configure(
         -DSDL_LIBC=ON
         -DSDL_TEST_LIBRARY=OFF
         -DSDL_TESTS=OFF
+        -DSDL_X11_XSCRNSAVER=OFF
         -DSDL_INSTALL_CMAKEDIR_ROOT=share/${PORT}
         # Specifying the revision skips the need to use git to determine a version
         -DSDL_REVISION=vcpkg

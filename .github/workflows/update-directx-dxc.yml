@@ -1,0 +1,132 @@
+name: Update directx-dxc port
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Weekly Monday 9am UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-and-update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for new release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Get latest non-prerelease release
+          RELEASE_JSON=$(gh api repos/microsoft/DirectXShaderCompiler/releases \
+            --jq '[.[] | select(.prerelease == false and .draft == false)] | first')
+
+          if [ -z "$RELEASE_JSON" ] || [ "$RELEASE_JSON" = "null" ]; then
+            echo "No stable release found"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEW_TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
+          CURRENT_TAG=$(grep -oP '(?<=set\(DIRECTX_DXC_TAG ).*(?=\))' ports/directx-dxc/portfile.cmake)
+
+          echo "Current tag: $CURRENT_TAG"
+          echo "Latest tag:  $NEW_TAG"
+
+          if [ "$NEW_TAG" = "$CURRENT_TAG" ]; then
+            echo "Already up to date"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Check if a PR already exists for this tag
+          EXISTING_PR=$(gh pr list --head "update-directx-dxc/${NEW_TAG}" --json number --jq '.[0].number')
+          if [ -n "$EXISTING_PR" ]; then
+            echo "PR #$EXISTING_PR already exists for $NEW_TAG"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Parse asset URLs from release using anchored regexes
+          WIN_ASSET=$(echo "$RELEASE_JSON" | jq -r \
+            '.assets[] | select(.name | test("^dxc_[0-9]{4}_[0-9]{2}_[0-9]{2}\\.zip$")) | .browser_download_url')
+          LINUX_ASSET=$(echo "$RELEASE_JSON" | jq -r \
+            '.assets[] | select(.name | test("^linux_dxc_[0-9]{4}_[0-9]{2}_[0-9]{2}\\.x86_64\\.tar\\.gz$")) | .browser_download_url')
+
+          if [ -z "$WIN_ASSET" ] || [ -z "$LINUX_ASSET" ]; then
+            echo "::error::Could not find expected release assets"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Extract date portion from filenames and verify they match
+          WIN_VERSION=$(basename "$WIN_ASSET" | grep -oP '^dxc_\K[0-9]{4}_[0-9]{2}_[0-9]{2}(?=\.zip$)')
+          LINUX_VERSION=$(basename "$LINUX_ASSET" | grep -oP '^linux_dxc_\K[0-9]{4}_[0-9]{2}_[0-9]{2}(?=\.x86_64\.tar\.gz$)')
+
+          if [ "$WIN_VERSION" != "$LINUX_VERSION" ]; then
+            echo "::error::Windows date ($WIN_VERSION) != Linux date ($LINUX_VERSION)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$WIN_VERSION" >> "$GITHUB_OUTPUT"
+          echo "win_asset=$WIN_ASSET" >> "$GITHUB_OUTPUT"
+          echo "linux_asset=$LINUX_ASSET" >> "$GITHUB_OUTPUT"
+
+      - name: Update port files
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          ./.github/scripts/update-directx-dxc.ps1 `
+            -NewTag "${{ steps.check.outputs.new_tag }}" `
+            -NewVersion "${{ steps.check.outputs.version }}" `
+            -WinAssetUrl "${{ steps.check.outputs.win_asset }}" `
+            -LinuxAssetUrl "${{ steps.check.outputs.linux_asset }}"
+
+      - name: Bootstrap vcpkg
+        if: steps.check.outputs.skip != 'true'
+        uses: lukka/run-vcpkg@v11
+        with:
+          runVcpkgInstall: false
+
+      - name: Update version database
+        if: steps.check.outputs.skip != 'true'
+        run: vcpkg x-add-version directx-dxc --overwrite-version
+
+      - name: Create pull request
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_TAG: ${{ steps.check.outputs.new_tag }}
+          NEW_VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          VERSION_DATE="${NEW_VERSION//_/-}"
+          BRANCH="update-directx-dxc/${NEW_TAG}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH"
+          git add ports/directx-dxc/ versions/
+          git commit -m "Update directx-dxc port to ${NEW_TAG} (${VERSION_DATE})"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --title "Update directx-dxc port to ${NEW_TAG}" \
+            --body "Updates the \`directx-dxc\` port to release [${NEW_TAG}](https://github.com/microsoft/DirectXShaderCompiler/releases/tag/${NEW_TAG}).
+
+          **Changes:**
+          - Tag: \`${NEW_TAG}\`
+          - Version date: \`${VERSION_DATE}\`
+          - Updated SHA512 hashes for Windows, Linux, and LICENSE assets
+          - Version database updated via \`vcpkg x-add-version\`" \
+            --head "$BRANCH"
